@@ -72,6 +72,7 @@ class StreamingTraceProcessor:
         
         # Regex patterns for span name normalization (from preprocessing.py)
         self.regex_patterns = [
+            (r'/_doc/\d+', '/_doc/'),
             (r'\d+', '<NUM>'),  # Replace numbers with <NUM>
             (r'[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}', '<UUID>'),  # Replace UUIDs
             (r'/[a-fA-F0-9]{32,}', '/<HASH>'),  # Replace long hashes
