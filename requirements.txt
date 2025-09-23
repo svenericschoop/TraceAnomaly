@@ -27,3 +27,4 @@ requests
 
 lazy-object-proxy
 drain3
+psutil
