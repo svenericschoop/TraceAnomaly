@@ -27,10 +27,128 @@ from drain3 import TemplateMiner
 from drain3.file_persistence import FilePersistence
 import psutil
 import sys
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import threading
-from multiprocessing import cpu_count
+from multiprocessing import cpu_count, Manager
+import multiprocessing
 import time
+
+
+# Standalone functions for multiprocessing
+def process_single_trace_standalone(trace_data, training_mode, drain_state_file=None):
+    """Standalone function to process a single trace for multiprocessing."""
+    try:
+        # Initialize drain3 template miner for this process
+        if drain_state_file:
+            from drain3.file_persistence import FilePersistence
+            persistence = FilePersistence(drain_state_file)
+            template_miner = TemplateMiner(persistence)
+        else:
+            template_miner = TemplateMiner()
+        
+        # Regex patterns for span name normalization
+        regex_patterns = [
+            (r'/_doc/\d+', '/_doc/'),
+            (r'\d+', '<NUM>'),  # Replace numbers with <NUM>
+            (r'[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}', '<UUID>'),  # Replace UUIDs
+            (r'/[a-fA-F0-9]{32,}', '/<HASH>'),  # Replace long hashes
+            (r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', '<IP>'),  # Replace IP addresses
+            (r'\b\d{4}-\d{2}-\d{2}\b', '<DATE>'),  # Replace dates
+            (r'\b\d{2}:\d{2}:\d{2}\b', '<TIME>'),  # Replace times
+        ]
+        
+        def normalize_span_name(span_name):
+            normalized = span_name
+            for pattern, replacement in regex_patterns:
+                normalized = re.sub(pattern, replacement, normalized)
+            return normalized
+        
+        def parse_span_name_with_drain3(span_name):
+            if training_mode:
+                result = template_miner.add_log_message(span_name)
+                return result["cluster_id"] if result else 0
+            else:
+                result = template_miner.match(span_name)
+                return result.cluster_id if result else 0
+        
+        def extract_service_patterns(trace_data):
+            patterns = []
+            
+            def extract_from_span(span, depth=0):
+                if depth > 10:  # Prevent infinite recursion
+                    return
+                    
+                name = span.get('name', 'unknown')
+                subtype = span.get('subtype', 'unknown')
+                
+                # Normalize the span name using regex patterns
+                normalized_name = normalize_span_name(name)
+                
+                # Parse with drain3 to get template ID
+                template_id = parse_span_name_with_drain3(normalized_name)
+                
+                # Create pattern using template ID instead of raw name
+                pattern = f"template_{template_id}#{subtype}"
+                patterns.append(pattern)
+                
+                children = span.get('children', [])
+                for child in children:
+                    extract_from_span(child, depth + 1)
+            
+            if 'children' in trace_data:
+                for child in trace_data['children']:
+                    extract_from_span(child)
+            
+            return patterns
+        
+        def create_sequence_patterns(patterns):
+            sequence_patterns = []
+            
+            # Create patterns of different lengths (1, 2, 3)
+            for length in [1, 2, 3]:
+                for i in range(len(patterns) - length + 1):
+                    sequence = '#'.join(patterns[i:i+length])
+                    sequence_patterns.append(sequence)
+            
+            return sequence_patterns
+        
+        patterns = extract_service_patterns(trace_data['data'])
+        sequence_patterns = create_sequence_patterns(patterns)
+        return sequence_patterns, trace_data['id']
+        
+    except Exception as e:
+        return [], trace_data.get('id', 'unknown')
+
+
+def process_chunk_standalone(chunk_data, chunk_idx, training_mode, drain_state_file=None):
+    """Standalone function to process a chunk for multiprocessing."""
+    traces_chunk = chunk_data['traces']
+    temp_dir = chunk_data['temp_dir']
+    
+    chunk_patterns = []
+    chunk_flow_ids = []
+    chunk_counter = Counter()
+    
+    for trace in traces_chunk:
+        sequence_patterns, flow_id = process_single_trace_standalone(trace, training_mode, drain_state_file)
+        
+        if sequence_patterns:  # Only add if processing was successful
+            chunk_patterns.append(sequence_patterns)
+            chunk_flow_ids.append(flow_id)
+            
+            # Count pattern frequencies for this chunk
+            for pattern in sequence_patterns:
+                chunk_counter[pattern] += 1
+    
+    # Save chunk data to temporary file
+    chunk_file = os.path.join(temp_dir, f'chunk_{chunk_idx}.pkl')
+    with open(chunk_file, 'wb') as f:
+        pickle.dump({
+            'patterns': chunk_patterns,
+            'flow_ids': chunk_flow_ids
+        }, f)
+    
+    return chunk_file, dict(chunk_counter)
 
 
 class StreamingTraceProcessor:
@@ -56,11 +174,9 @@ class StreamingTraceProcessor:
         self.temp_dir = None
         self.chunk_files = []
         self.training_mode = training_mode
-        self.num_threads = num_threads or cpu_count()
+        self.num_processes = num_threads or cpu_count()
         
-        # Thread-safe locks for shared resources
-        self.counter_lock = threading.Lock()
-        self.template_lock = threading.Lock()
+        # Note: No locks needed for multiprocessing as each process has its own memory space
         
         # Initialize drain3 template miner
         if drain_state_file:
@@ -183,46 +299,28 @@ class StreamingTraceProcessor:
             return [], trace.get('id', 'unknown')
     
     def process_chunk_parallel(self, traces_chunk: List[Dict], chunk_idx: int) -> str:
-        """Process a chunk of traces in parallel and save to temporary file."""
-        print(f"Processing chunk {chunk_idx} with {len(traces_chunk)} traces using {self.num_threads} threads...")
+        """Process a chunk of traces in parallel using multiprocessing."""
+        print(f"Processing chunk {chunk_idx} with {len(traces_chunk)} traces using {self.num_processes} processes...")
         start_time = time.time()
         
-        chunk_patterns = []
-        chunk_flow_ids = []
-        chunk_counter = Counter()
+        # Prepare data for multiprocessing
+        chunk_data = {
+            'traces': traces_chunk,
+            'temp_dir': self.temp_dir
+        }
         
-        # Process traces in parallel
-        with ThreadPoolExecutor(max_workers=self.num_threads) as executor:
-            # Submit all trace processing tasks
-            future_to_trace = {
-                executor.submit(self.process_single_trace, trace): trace 
-                for trace in traces_chunk
-            }
+        # Use multiprocessing for CPU-bound work
+        with ProcessPoolExecutor(max_workers=self.num_processes) as executor:
+            # Submit the chunk processing task
+            future = executor.submit(process_chunk_standalone, chunk_data, chunk_idx, 
+                                   self.training_mode, self.drain_state_file)
             
-            # Collect results as they complete
-            for future in as_completed(future_to_trace):
-                sequence_patterns, flow_id = future.result()
-                
-                if sequence_patterns:  # Only add if processing was successful
-                    chunk_patterns.append(sequence_patterns)
-                    chunk_flow_ids.append(flow_id)
-                    
-                    # Count pattern frequencies for this chunk
-                    for pattern in sequence_patterns:
-                        chunk_counter[pattern] += 1
-        
-        # Update global counter in thread-safe manner
-        with self.counter_lock:
-            for pattern, count in chunk_counter.items():
+            # Get the result
+            chunk_file, chunk_counter_dict = future.result()
+            
+            # Update global counter
+            for pattern, count in chunk_counter_dict.items():
                 self.feature_counter[pattern] += count
-        
-        # Save chunk data to temporary file
-        chunk_file = os.path.join(self.temp_dir, f'chunk_{chunk_idx}.pkl')
-        with open(chunk_file, 'wb') as f:
-            pickle.dump({
-                'patterns': chunk_patterns,
-                'flow_ids': chunk_flow_ids
-            }, f)
         
         self.chunk_files.append(chunk_file)
         
@@ -234,7 +332,7 @@ class StreamingTraceProcessor:
     def process_traces_streaming(self, input_file: str) -> None:
         """Process all traces from the input file in streaming mode."""
         print(f"Processing traces from {input_file} in streaming mode...")
-        print(f"Using {self.num_threads} threads for parallel processing")
+        print(f"Using {self.num_processes} processes for parallel processing")
         
         # Create temporary directory
         self.temp_dir = tempfile.mkdtemp(prefix='trace_processing_')
@@ -327,7 +425,7 @@ class StreamingTraceProcessor:
     
     def create_feature_vectors_streaming(self) -> Tuple[List[str], str]:
         """Create feature vectors in streaming mode with parallel processing."""
-        print(f"Creating feature vectors in streaming mode using {self.num_threads} threads...")
+        print(f"Creating feature vectors in streaming mode using {self.num_processes} processes...")
         self.log_memory_usage("Start feature vector creation")
         
         num_features = len(self.feature_index_map)
@@ -342,7 +440,7 @@ class StreamingTraceProcessor:
         data_values = []
         current_row = 0
         
-        with ThreadPoolExecutor(max_workers=self.num_threads) as executor:
+        with ProcessPoolExecutor(max_workers=self.num_processes) as executor:
             # Submit all chunk processing tasks
             future_to_chunk = {
                 executor.submit(self.process_chunk_for_vectors, chunk_file): chunk_file 
@@ -690,7 +788,7 @@ def main():
     parser.add_argument('--ultra_efficient', action='store_true', default=False,
                        help='Use ultra-efficient normalization (recommended for very large datasets)')
     parser.add_argument('--num_threads', type=int, default=None,
-                       help='Number of threads to use (default: all available cores)')
+                       help='Number of processes to use (default: all available cores)')
     
     args = parser.parse_args()
     
@@ -738,4 +836,6 @@ def main():
 
 
 if __name__ == '__main__':
+    # Required for multiprocessing on some systems
+    multiprocessing.set_start_method('spawn', force=True)
     main()
