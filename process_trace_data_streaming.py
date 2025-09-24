@@ -175,6 +175,7 @@ class StreamingTraceProcessor:
         self.chunk_files = []
         self.training_mode = training_mode
         self.num_processes = num_threads or cpu_count()
+        self.drain_state_file = drain_state_file
         
         # Note: No locks needed for multiprocessing as each process has its own memory space
         
