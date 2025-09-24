@@ -503,33 +503,46 @@ class StreamingTraceProcessor:
         print(f"Loaded sparse matrix: {feature_vectors.shape}")
         self.log_memory_usage("After loading sparse matrix")
         
-        # Find valid columns (memory-efficient way)
+        # Find valid columns (optimized vectorized way)
         print("Finding valid columns...")
-        valid_columns = []
-        for i in range(feature_vectors.shape[1]):
-            if feature_vectors[:, i].nnz > 0:  # Check if column has any non-zero values
-                valid_columns.append(i)
+        self.log_memory_usage("Before finding valid columns")
+        
+        # Use vectorized operation to find columns with non-zero values
+        # This is much faster than checking each column individually
+        print("Computing column non-zero counts...")
+        column_nnz = np.array(feature_vectors.getnnz(axis=0))
+        print("Finding valid columns...")
+        valid_columns = np.where(column_nnz > 0)[0].tolist()
         
         print(f"Valid columns: {len(valid_columns)} out of {feature_vectors.shape[1]}")
+        self.log_memory_usage("After finding valid columns")
         
         # Filter to valid columns
         feature_vectors = feature_vectors[:, valid_columns]
         self.log_memory_usage("After filtering columns")
         
-        # Calculate statistics for normalization (memory-efficient)
+        # Calculate statistics for normalization (optimized vectorized way)
         print("Calculating normalization statistics...")
+        self.log_memory_usage("Before calculating statistics")
+        
+        # Use vectorized operations for much faster statistics calculation
+        # Convert to dense matrix in chunks to manage memory
         mean_values = []
         std_values = []
         
-        # Process columns in batches to avoid memory issues
-        batch_size = 500  # Reduced batch size for better memory management
+        # Process in larger batches since we're using vectorized operations
+        batch_size = 2000  # Increased batch size for better vectorization
         for batch_start in range(0, feature_vectors.shape[1], batch_size):
             batch_end = min(batch_start + batch_size, feature_vectors.shape[1])
-            batch_cols = feature_vectors[:, batch_start:batch_end]
+            batch_cols = feature_vectors[:, batch_start:batch_end].toarray()
+            
+            # Vectorized calculation for all columns in the batch
+            # Find non-zero values for each column
+            non_zero_mask = batch_cols > 0.00001
             
             for i in range(batch_cols.shape[1]):
-                col_data = batch_cols[:, i].toarray().flatten()
-                non_zero_values = col_data[col_data > 0.00001]
+                col_data = batch_cols[:, i]
+                non_zero_values = col_data[non_zero_mask[:, i]]
                 
                 if len(non_zero_values) > 0:
                     mean_values.append(np.mean(non_zero_values))
@@ -540,8 +553,10 @@ class StreamingTraceProcessor:
             
             # Force garbage collection after each batch
             gc.collect()
-            if batch_start % 5000 == 0:
+            if batch_start % 10000 == 0:
                 self.log_memory_usage(f"Stats calculation batch {batch_start}")
+        
+        self.log_memory_usage("After calculating statistics")
         
         # Apply normalization in streaming fashion
         print("Applying normalization in streaming mode...")
@@ -612,42 +627,58 @@ class StreamingTraceProcessor:
         print(f"Loaded sparse matrix: {feature_vectors.shape}")
         self.log_memory_usage("After loading sparse matrix")
         
-        # Find valid columns
+        # Find valid columns (optimized vectorized way)
         print("Finding valid columns...")
-        valid_columns = []
-        for i in range(feature_vectors.shape[1]):
-            if feature_vectors[:, i].nnz > 0:
-                valid_columns.append(i)
+        self.log_memory_usage("Before finding valid columns")
+        
+        # Use vectorized operation to find columns with non-zero values
+        print("Computing column non-zero counts...")
+        column_nnz = np.array(feature_vectors.getnnz(axis=0))
+        print("Finding valid columns...")
+        valid_columns = np.where(column_nnz > 0)[0].tolist()
         
         print(f"Valid columns: {len(valid_columns)} out of {feature_vectors.shape[1]}")
+        self.log_memory_usage("After finding valid columns")
         
         # Filter to valid columns
         feature_vectors = feature_vectors[:, valid_columns]
         self.log_memory_usage("After filtering columns")
         
-        # Calculate statistics without loading full matrix
+        # Calculate statistics with optimized vectorized operations
         print("Calculating normalization statistics...")
+        self.log_memory_usage("Before calculating statistics")
+        
         mean_values = []
         std_values = []
         
-        # Process columns one by one to minimize memory usage
-        for i in range(feature_vectors.shape[1]):
-            col_data = feature_vectors[:, i].toarray().flatten()
-            non_zero_values = col_data[col_data > 0.00001]
+        # Process columns in batches for better vectorization
+        batch_size = 1000  # Process 1000 columns at a time
+        for batch_start in range(0, feature_vectors.shape[1], batch_size):
+            batch_end = min(batch_start + batch_size, feature_vectors.shape[1])
+            batch_cols = feature_vectors[:, batch_start:batch_end].toarray()
             
-            if len(non_zero_values) > 0:
-                mean_values.append(np.mean(non_zero_values))
-                std_values.append(max(1, np.std(non_zero_values)))
-            else:
-                mean_values.append(0)
-                std_values.append(1)
+            # Vectorized calculation for all columns in the batch
+            non_zero_mask = batch_cols > 0.00001
             
-            # Clear column data immediately
-            del col_data, non_zero_values
+            for i in range(batch_cols.shape[1]):
+                col_data = batch_cols[:, i]
+                non_zero_values = col_data[non_zero_mask[:, i]]
+                
+                if len(non_zero_values) > 0:
+                    mean_values.append(np.mean(non_zero_values))
+                    std_values.append(max(1, np.std(non_zero_values)))
+                else:
+                    mean_values.append(0)
+                    std_values.append(1)
             
-            if i % 100 == 0:
-                gc.collect()
-                self.log_memory_usage(f"Stats calculation column {i}")
+            # Clear batch data immediately
+            del batch_cols, non_zero_mask
+            gc.collect()
+            
+            if batch_start % 5000 == 0:
+                self.log_memory_usage(f"Stats calculation batch {batch_start}")
+        
+        self.log_memory_usage("After calculating statistics")
         
         # Apply normalization in ultra-small chunks
         print("Applying ultra-efficient normalization...")
