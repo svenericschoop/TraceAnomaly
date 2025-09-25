@@ -11,7 +11,7 @@ from sklearn.model_selection import train_test_split
 import tfsnippet as spt
 from tfsnippet.examples.utils import (print_with_title,
                                       collect_outputs)
-from traceanomaly.readdata_custom import get_data_vae_custom, print_data_summary
+from traceanomaly.readdata_custom import get_data_vae_custom, get_data_vae_unsupervised, print_data_summary
 from traceanomaly.MLConfig import (MLConfig,
                        global_config as config,
                        config_options)
@@ -143,9 +143,25 @@ def main(data_dir, outputpath):
     # Print data summary
     print_data_summary(data_dir)
 
-    # read data using custom data loader
-    (x_train, y_train), (x_test, y_test), flows_test = \
-        get_data_vae_custom(data_dir)
+    # Check if test files exist for supervised vs unsupervised training
+    test_normal_file = os.path.join(data_dir, 'test_normal')
+    test_abnormal_file = os.path.join(data_dir, 'test_abnormal')
+    
+    if os.path.exists(test_normal_file) and os.path.exists(test_abnormal_file):
+        # Supervised training with test data
+        print("Found test files, using supervised training mode")
+        (x_train, y_train), (x_test, y_test), flows_test = \
+            get_data_vae_custom(data_dir)
+        unsupervised_mode = False
+    else:
+        # Unsupervised training without test data
+        print("Test files not found, using unsupervised training mode")
+        x_train, flows_train = get_data_vae_unsupervised(data_dir)
+        y_train = None  # No labels in unsupervised mode
+        x_test = None
+        y_test = None
+        flows_test = None
+        unsupervised_mode = True
     
     config.x_dim = x_train.shape[1]
 
@@ -158,7 +174,10 @@ def main(data_dir, outputpath):
     x_train, x_valid = train_test_split(x_train, test_size=valid_rate)
     
     print('%s for validation, %s for training' % (x_valid.shape[0], x_train.shape[0]))
-    print('%s for test' % x_test.shape[0])
+    if not unsupervised_mode:
+        print('%s for test' % x_test.shape[0])
+    else:
+        print('No test data (unsupervised mode)')
     print('x_dim: %s z_dim: %s' % (config.x_dim, config.z_dim))
 
     # input placeholders
@@ -239,8 +258,12 @@ def main(data_dir, outputpath):
                                      skip_incomplete=True)
     valid_flow = spt.DataFlow.arrays([x_valid],
                                      config.test_batch_size)
-    test_flow = spt.DataFlow.arrays([x_test],
-                                    config.test_batch_size)
+    
+    if not unsupervised_mode:
+        test_flow = spt.DataFlow.arrays([x_test],
+                                        config.test_batch_size)
+    else:
+        test_flow = None
 
     # model_file
     model_name = os.path.join(
@@ -303,22 +326,27 @@ def main(data_dir, outputpath):
             saver.save()
 
         # get the answer
-        print('Starting testing...')
-        start = time.time()
-        test_ans = collect_outputs([test_logp], [input_x], test_flow)[0] \
-            / config.x_dim
-        end = time.time()
-        print("Test time: ", end-start)
+        if not unsupervised_mode:
+            print('Starting testing...')
+            start = time.time()
+            test_ans = collect_outputs([test_logp], [input_x], test_flow)[0] \
+                / config.x_dim
+            end = time.time()
+            print("Test time: ", end-start)
+            
+            # Save results
+            output_file = os.path.join('results', '{}_{}.csv'.format(config.flow_type or 'vae', outputpath))
+            valid_file = os.path.join('results', 'v{}_{}.csv'.format(config.flow_type or 'vae', outputpath))
+            
+            pd.DataFrame(
+                {'id': flows_test, 'label': y_test, 'score': test_ans}) \
+                .to_csv(output_file, index=False)
+            print(f'Test results saved to: {output_file}')
+        else:
+            print('Skipping testing (unsupervised mode)')
+            valid_file = os.path.join('results', 'v{}_{}.csv'.format(config.flow_type or 'vae', outputpath))
         
-        # Save results
-        output_file = os.path.join('results', '{}_{}.csv'.format(config.flow_type or 'vae', outputpath))
-        valid_file = os.path.join('results', 'v{}_{}.csv'.format(config.flow_type or 'vae', outputpath))
-        
-        pd.DataFrame(
-            {'id': flows_test, 'label': y_test, 'score': test_ans}) \
-            .to_csv(output_file, index=False)
-        print(f'Test results saved to: {output_file}')
-        
+        # Always save validation results
         valid_ans = collect_outputs([test_logp], [input_x], valid_flow)[0] \
             / config.x_dim
         pd.DataFrame({'score': valid_ans}).to_csv(valid_file, index=False)
