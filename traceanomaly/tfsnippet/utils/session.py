@@ -39,7 +39,7 @@ def create_session(lock_memory=True,
     Returns:
         tf.Session: The TensorFlow session.
     """
-    config = tf.compat.v1.ConfigProto(log_device_placement=log_device_placement,
+    config = tf.ConfigProto(log_device_placement=log_device_placement,
                             allow_soft_placement=allow_soft_placement,
                             **kwargs)
     if lock_memory is False:
@@ -48,7 +48,7 @@ def create_session(lock_memory=True,
         config.gpu_options.per_process_gpu_memory_fraction = lock_memory
     elif lock_memory is not True:
         raise TypeError('`lock_memory` must be True, False or float.')
-    session = tf.compat.v1.Session(config=config)
+    session = tf.Session(config=config)
     return session
 
 
@@ -62,13 +62,13 @@ def get_default_session_or_error():
     Raises:
         RuntimeError: If there's no active session.
     """
-    ret = tf.compat.v1.get_default_session()
+    ret = tf.get_default_session()
     if ret is None:
         raise RuntimeError('No session is active')
     return ret
 
 
-def get_variables_as_dict(scope=None, collection=tf.compat.v1.GraphKeys.GLOBAL_VARIABLES):
+def get_variables_as_dict(scope=None, collection=tf.GraphKeys.GLOBAL_VARIABLES):
     """
     Get TensorFlow variables as dict.
 
@@ -97,7 +97,7 @@ def get_variables_as_dict(scope=None, collection=tf.compat.v1.GraphKeys.GLOBAL_V
     scope_name_len = len(scope_name) if scope_name else 0
 
     # get the variables and strip the prefix
-    variables = tf.compat.v1.get_collection(collection, scope_name)
+    variables = tf.get_collection(collection, scope_name)
     return {
         var.name[scope_name_len:].rsplit(':', 1)[0]: var
         for var in variables
@@ -119,7 +119,7 @@ def get_uninitialized_variables(variables=None, name=None):
     """
     sess = get_default_session_or_error()
     if variables is None:
-        variables = tf.compat.v1.global_variables()
+        variables = tf.global_variables()
     else:
         variables = list(variables)
     with tf.name_scope(name, default_name='get_uninitialized_variables'):
