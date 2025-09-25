@@ -130,8 +130,12 @@ def coupling_layer_shift_and_scale(x1, n2):
               help='The name of output files',
               metavar='PATH',
               required=True, type=str)
+@click.option('--max_samples', help='Maximum number of samples to load (for memory efficiency)', 
+              metavar='INT', type=int, default=None)
+@click.option('--sample_rate', help='Fraction of data to sample (0.1 = 10%)', 
+              metavar='FLOAT', type=float, default=1.0)
 @config_options(ExpConfig)
-def main(data_dir, outputpath):
+def main(data_dir, outputpath, max_samples, sample_rate):
     if config.debug_level == -1:
         spt.utils.set_assertion_enabled(False)
     elif config.debug_level == 1:
@@ -156,7 +160,7 @@ def main(data_dir, outputpath):
     else:
         # Unsupervised training without test data
         print("Test files not found, using unsupervised training mode")
-        x_train, flows_train = get_data_vae_unsupervised(data_dir)
+        x_train, flows_train = get_data_vae_unsupervised(data_dir, max_samples, sample_rate)
         y_train = None  # No labels in unsupervised mode
         x_test = None
         y_test = None

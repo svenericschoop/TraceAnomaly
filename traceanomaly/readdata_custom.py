@@ -24,16 +24,17 @@ def read_raw_vector(input_file, vc=None, shuffle=True, sample=False):
     Returns:
         Tuple of (flows, vectors, valid_columns)
     """
-    with open(input_file, 'r') as fin:
-        raw = fin.read().strip().split('\n')
-
     flows = list()
     vectors = list()
-    for line in raw:
-        if line.strip() == "":
-            continue
-        flows.append(line.split(':')[0])
-        vectors.append([float(x) for x in line.split(':')[1].split(',')])
+    
+    # Read file line by line to avoid loading entire file into memory
+    with open(input_file, 'r') as fin:
+        for line in fin:
+            line = line.strip()
+            if line == "":
+                continue
+            flows.append(line.split(':')[0])
+            vectors.append([float(x) for x in line.split(':')[1].split(',')])
         
     if shuffle is True:
         arr_index = np.arange(len(vectors))
@@ -144,12 +145,14 @@ def get_data_vae_custom(data_dir):
     return get_data_vae(train_file, normal_file, abnormal_file)
 
 
-def get_data_vae_unsupervised(data_dir):
+def get_data_vae_unsupervised(data_dir, max_samples=None, sample_rate=1.0):
     """
     Get data for unsupervised VAE training from custom processed data.
     
     Args:
         data_dir: Directory containing processed data files
+        max_samples: Maximum number of samples to load (None for all)
+        sample_rate: Fraction of data to sample (1.0 for all, 0.1 for 10%)
         
     Returns:
         Tuple of (train_x, train_flow_ids)
@@ -160,8 +163,19 @@ def get_data_vae_unsupervised(data_dir):
     if not os.path.exists(train_file):
         raise FileNotFoundError(f"Required file not found: {train_file}")
     
-    # Read training data
-    flows, vectors, _ = read_raw_vector(train_file)
+    # For very large files, use sampling to reduce memory usage
+    if max_samples is not None or sample_rate < 1.0:
+        print(f"Using sampling: max_samples={max_samples}, sample_rate={sample_rate}")
+        flows, vectors, _ = read_raw_vector(train_file, sample=True)
+        
+        # Apply additional sampling if needed
+        if max_samples is not None and len(vectors) > max_samples:
+            indices = np.random.choice(len(vectors), max_samples, replace=False)
+            vectors = vectors[indices]
+            flows = [flows[i] for i in indices]
+    else:
+        # Read all training data
+        flows, vectors, _ = read_raw_vector(train_file)
     
     return vectors, flows
 
