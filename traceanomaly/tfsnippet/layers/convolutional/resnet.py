@@ -1,7 +1,10 @@
 from functools import partial
 
 import tensorflow as tf
-from tensorflow.contrib.framework import add_arg_scope
+# from tensorflow.contrib.framework import add_arg_scope  # Removed for TF 2.x compatibility
+def add_arg_scope(func):
+    """Compatibility layer for add_arg_scope"""
+    return func
 
 from tfsnippet.utils import (validate_int_tuple_arg, is_integer,
                              add_name_and_scope_arg_doc, InputSpec,

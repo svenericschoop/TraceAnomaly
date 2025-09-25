@@ -1,5 +1,8 @@
 import tensorflow as tf
-from tensorflow.contrib.framework import add_arg_scope
+# from tensorflow.contrib.framework import add_arg_scope  # Removed for TF 2.x compatibility
+def add_arg_scope(func):
+    """Compatibility layer for add_arg_scope"""
+    return func
 
 from tfsnippet.utils import (validate_enum_arg, flatten_to_ndims, unflatten_from_ndims,
                              add_name_arg_doc)

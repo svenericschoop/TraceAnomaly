@@ -159,7 +159,7 @@ class DataFlow(object):
         Construct a :class:`~tfsnippet.dataflows.MapperFlow`.
 
         Args:
-            mapper ((\*np.ndarray) -> tuple[np.ndarray])): The mapper
+            mapper ((\\*np.ndarray) -> tuple[np.ndarray])): The mapper
                 function, which transforms numpy arrays into a tuple
                 of other numpy arrays.
             array_indices (int or Iterable[int]): The indices of the arrays

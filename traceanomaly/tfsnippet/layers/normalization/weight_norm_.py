@@ -1,5 +1,8 @@
 import tensorflow as tf
-from tensorflow.contrib.framework import add_arg_scope
+# from tensorflow.contrib.framework import add_arg_scope  # Removed for TF 2.x compatibility
+def add_arg_scope(func):
+    """Compatibility layer for add_arg_scope"""
+    return func
 
 from tfsnippet.utils import (ParamSpec,
                              get_static_shape,
