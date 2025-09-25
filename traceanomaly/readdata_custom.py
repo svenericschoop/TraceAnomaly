@@ -11,6 +11,84 @@ import json
 import os
 
 
+def read_raw_vector_streaming(input_file, vc=None, max_samples=None, sample_rate=1.0):
+    """
+    Memory-efficient streaming read of raw vector data.
+    
+    Args:
+        input_file: Path to the input file
+        vc: Valid columns (optional)
+        max_samples: Maximum number of samples to read
+        sample_rate: Fraction of data to sample (1.0 for all)
+        
+    Returns:
+        Tuple of (flows, vectors, valid_columns)
+    """
+    flows = list()
+    vectors = list()
+    
+    # First pass: count total lines for sampling
+    total_lines = 0
+    with open(input_file, 'r') as fin:
+        for line in fin:
+            if line.strip():
+                total_lines += 1
+    
+    # Calculate how many samples to actually read
+    if max_samples is not None:
+        target_samples = min(max_samples, int(total_lines * sample_rate))
+    else:
+        target_samples = int(total_lines * sample_rate)
+    
+    print(f"File has {total_lines} lines, sampling {target_samples} samples")
+    
+    # Second pass: read only the samples we need
+    import random
+    if sample_rate < 1.0:
+        # Random sampling - select line indices to read
+        selected_indices = set(random.sample(range(total_lines), target_samples))
+    else:
+        # Read all lines
+        selected_indices = set(range(total_lines))
+    
+    line_idx = 0
+    with open(input_file, 'r') as fin:
+        for line in fin:
+            line = line.strip()
+            if line == "":
+                continue
+                
+            if line_idx in selected_indices:
+                flows.append(line.split(':')[0])
+                vectors.append([float(x) for x in line.split(':')[1].split(',')])
+            
+            line_idx += 1
+            
+            # Stop if we have enough samples
+            if len(vectors) >= target_samples:
+                break
+    
+    vectors = np.array(vectors)
+    n = len(vectors)
+    m = len(vectors[0])
+
+    if vc is None:
+        valid_column = list()
+        for i in range(0, m):
+            flag = False
+            for j in range(0, n):
+                if vectors[j, i] > 0:
+                    flag = True
+                    break
+            if flag:
+                valid_column.append(i)
+    else:
+        valid_column = vc
+
+    vectors = vectors[:, valid_column]
+    return flows, vectors, valid_column
+
+
 def read_raw_vector(input_file, vc=None, shuffle=True, sample=False):
     """
     Read raw vector data from processed trace files.
@@ -163,19 +241,9 @@ def get_data_vae_unsupervised(data_dir, max_samples=None, sample_rate=1.0):
     if not os.path.exists(train_file):
         raise FileNotFoundError(f"Required file not found: {train_file}")
     
-    # For very large files, use sampling to reduce memory usage
-    if max_samples is not None or sample_rate < 1.0:
-        print(f"Using sampling: max_samples={max_samples}, sample_rate={sample_rate}")
-        flows, vectors, _ = read_raw_vector(train_file, sample=True)
-        
-        # Apply additional sampling if needed
-        if max_samples is not None and len(vectors) > max_samples:
-            indices = np.random.choice(len(vectors), max_samples, replace=False)
-            vectors = vectors[indices]
-            flows = [flows[i] for i in indices]
-    else:
-        # Read all training data
-        flows, vectors, _ = read_raw_vector(train_file)
+    # Use streaming approach for memory efficiency
+    print(f"Using streaming data loading: max_samples={max_samples}, sample_rate={sample_rate}")
+    flows, vectors, _ = read_raw_vector_streaming(train_file, max_samples=max_samples, sample_rate=sample_rate)
     
     return vectors, flows
 
