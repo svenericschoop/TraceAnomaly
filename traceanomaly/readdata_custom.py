@@ -245,6 +245,12 @@ def get_data_vae_unsupervised(data_dir, max_samples=None, sample_rate=1.0):
     print(f"Using streaming data loading: max_samples={max_samples}, sample_rate={sample_rate}")
     flows, vectors, _ = read_raw_vector_streaming(train_file, max_samples=max_samples, sample_rate=sample_rate)
     
+    # Apply normalization for consistency with supervised training
+    print("Applying normalization...")
+    mean, std = get_mean_std(vectors)
+    vectors = normalization(vectors, mean, std)
+    print(f"Normalization complete. Data shape: {vectors.shape}")
+    
     return vectors, flows
 
 

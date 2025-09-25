@@ -7,6 +7,8 @@ import tensorflow as tf
 import pandas as pd
 from tensorflow.contrib.framework import arg_scope, add_arg_scope
 from sklearn.model_selection import train_test_split
+import gc
+import psutil
 
 import tfsnippet as spt
 from tfsnippet.examples.utils import (print_with_title,
@@ -135,6 +137,11 @@ def coupling_layer_shift_and_scale(x1, n2):
 @click.option('--sample_rate', help='Fraction of data to sample (0.1 = 10%)', 
               metavar='FLOAT', type=float, default=1.0)
 @config_options(ExpConfig)
+def get_memory_usage():
+    """Get current memory usage in MB."""
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / 1024 / 1024
+
 def main(data_dir, outputpath, max_samples, sample_rate):
     if config.debug_level == -1:
         spt.utils.set_assertion_enabled(False)
@@ -143,6 +150,10 @@ def main(data_dir, outputpath, max_samples, sample_rate):
 
     # print the config
     print_with_title('Configurations', config.format_config(), after='\n')
+    
+    # Monitor initial memory usage
+    initial_memory = get_memory_usage()
+    print(f"Initial memory usage: {initial_memory:.1f} MB")
 
     # Print data summary
     print_data_summary(data_dir)
@@ -172,6 +183,15 @@ def main(data_dir, outputpath, max_samples, sample_rate):
     all_len = x_train.shape[0]
     print('origin data: %s' % all_len)
     print('Feature dimension: %s' % config.x_dim)
+    
+    # Monitor memory after data loading
+    data_loaded_memory = get_memory_usage()
+    print(f"Memory after data loading: {data_loaded_memory:.1f} MB (delta: {data_loaded_memory - initial_memory:.1f} MB)")
+    
+    # Force garbage collection
+    gc.collect()
+    gc_memory = get_memory_usage()
+    print(f"Memory after garbage collection: {gc_memory:.1f} MB")
     
     # Split training data for validation
     valid_rate = 0.1
@@ -282,7 +302,12 @@ def main(data_dir, outputpath, max_samples, sample_rate):
     os.makedirs('models', exist_ok=True)
     os.makedirs('results', exist_ok=True)
 
-    with spt.utils.create_session().as_default() as session:
+    # Monitor memory before TensorFlow session creation
+    pre_tf_memory = get_memory_usage()
+    print(f"Memory before TensorFlow session: {pre_tf_memory:.1f} MB")
+    
+    # Create memory-efficient session configuration
+    with spt.utils.create_session(lock_memory=False).as_default() as session:
         var_dict = spt.utils.get_variables_as_dict()
         saver = spt.VariableSaver(var_dict, model_name)
         
