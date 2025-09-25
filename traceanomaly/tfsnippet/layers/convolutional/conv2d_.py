@@ -1,9 +1,6 @@
 import numpy as np
 import tensorflow as tf
-# from tensorflow.contrib.framework import add_arg_scope  # Removed for TF 2.x compatibility
-def add_arg_scope(func):
-    """Compatibility layer for add_arg_scope"""
-    return func
+from tensorflow.contrib.framework import add_arg_scope
 
 from tfsnippet.ops import assert_rank, assert_scalar_equal
 from tfsnippet.utils import (validate_positive_int_arg, ParamSpec,

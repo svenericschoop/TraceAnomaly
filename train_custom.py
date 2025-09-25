@@ -8,8 +8,8 @@ import tensorflow as tf
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-# Use the installed tfsnippet instead of local one
-# sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'traceanomaly'))
+# Add tfsnippet to Python path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'traceanomaly'))
 
 # Enable TensorFlow 1.x compatibility mode
 tf.compat.v1.disable_eager_execution()
