@@ -125,6 +125,12 @@ def coupling_layer_shift_and_scale(x1, n2):
     return shift, scale
 
 
+def get_memory_usage():
+    """Get current memory usage in MB."""
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / 1024 / 1024
+
+
 @click.command()
 @click.option('--data_dir', help='The path to the processed data directory', metavar='PATH',
               required=True, type=str)
@@ -137,11 +143,6 @@ def coupling_layer_shift_and_scale(x1, n2):
 @click.option('--sample_rate', help='Fraction of data to sample (0.1 = 10%)', 
               metavar='FLOAT', type=float, default=1.0)
 @config_options(ExpConfig)
-def get_memory_usage():
-    """Get current memory usage in MB."""
-    process = psutil.Process(os.getpid())
-    return process.memory_info().rss / 1024 / 1024
-
 def main(data_dir, outputpath, max_samples, sample_rate):
     if config.debug_level == -1:
         spt.utils.set_assertion_enabled(False)
