@@ -7,12 +7,17 @@ expected by the TraceAnomaly system for unsupervised training.
 
 The script performs the following steps:
 1. Parse JSON trace data to extract service call patterns
-2. Create feature vectors representing service call sequences
-3. Apply the same normalization pipeline as the original train_ticket data
-4. Save all processed data as training data for unsupervised learning
+2. Normalize span names using regex patterns and Drain3 template mining
+3. Create feature vectors representing service call sequences
+4. Apply the same normalization pipeline as the original train_ticket data
+5. Save all processed data as training data for unsupervised learning
 
 Usage:
-    python process_trace_data.py --input 1809.jsonl.gz --output_dir processed_data
+    # Training mode (build templates)
+    python process_trace_data.py --input 1809.jsonl.gz --output_dir processed_data --drain_state_file templates.pkl --training_mode
+    
+    # Inference mode (use existing templates)
+    python process_trace_data.py --input test_data.jsonl.gz --output_dir processed_test --drain_state_file templates.pkl --inference_mode
 """
 
 import json
@@ -21,30 +26,87 @@ import argparse
 import numpy as np
 import pickle
 import os
+import re
 from collections import defaultdict, Counter
 from typing import Dict, List, Tuple, Any
 import random
 from pathlib import Path
+from drain3 import TemplateMiner
+from drain3.file_persistence import FilePersistence
 
 
 class TraceProcessor:
     """Processes JSON trace data into TraceAnomaly format."""
     
-    def __init__(self, min_feature_count: int = 2):
+    def __init__(self, min_feature_count: int = 2, drain_state_file: str = None, training_mode: bool = True):
         """
         Initialize the trace processor.
         
         Args:
             min_feature_count: Minimum number of occurrences for a feature to be included
+            drain_state_file: Path to drain3 state file for template persistence
+            training_mode: Boolean flag to control template building vs. inference
         """
         self.min_feature_count = min_feature_count
         self.feature_index_map = {}  # Maps service patterns to feature indices
         self.feature_counter = Counter()
         self.traces = []
         
+        # Initialize Drain3 template miner
+        if drain_state_file:
+            persistence = FilePersistence(drain_state_file)
+            self.template_miner = TemplateMiner(persistence)
+        else:
+            self.template_miner = TemplateMiner()
+        
+        self.training_mode = training_mode
+        
+        # Regex patterns for span name normalization
+        self.regex_patterns = [
+            (r'/_doc/\d+', '/_doc/'),
+            (r'\d+', '<NUM>'),  # Replace numbers with <NUM>
+            (r'[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}', '<UUID>'),  # Replace UUIDs
+            (r'/[a-fA-F0-9]{32,}', '/<HASH>'),  # Replace long hashes
+            (r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', '<IP>'),  # Replace IP addresses
+            (r'\b\d{4}-\d{2}-\d{2}\b', '<DATE>'),  # Replace dates
+            (r'\b\d{2}:\d{2}:\d{2}\b', '<TIME>'),  # Replace times
+        ]
+    
+    def normalize_span_name(self, span_name: str) -> str:
+        """
+        Normalize span name using regex patterns.
+        
+        Args:
+            span_name: Raw span name
+            
+        Returns:
+            Normalized span name
+        """
+        normalized = span_name
+        for pattern, replacement in self.regex_patterns:
+            normalized = re.sub(pattern, replacement, normalized)
+        return normalized
+    
+    def parse_span_name_with_drain3(self, span_name: str) -> int:
+        """
+        Parse span name with Drain3 to get template cluster ID.
+        
+        Args:
+            span_name: Normalized span name
+            
+        Returns:
+            Template cluster ID
+        """
+        if self.training_mode:
+            result = self.template_miner.add_log_message(span_name)
+            return result["cluster_id"] if result else 0
+        else:
+            result = self.template_miner.match(span_name)
+            return result.cluster_id if result else 0
+        
     def extract_service_patterns(self, trace_data: Dict[str, Any]) -> List[str]:
         """
-        Extract service call patterns from a trace.
+        Extract service call patterns from a trace using Drain3 template parsing.
         
         Args:
             trace_data: JSON trace data
@@ -63,8 +125,14 @@ class TraceProcessor:
             name = span.get('name', 'unknown')
             subtype = span.get('subtype', 'unknown')
             
-            # Create pattern: service_name#subtype
-            pattern = f"{name}#{subtype}"
+            # Normalize the span name using regex patterns
+            normalized_name = self.normalize_span_name(name)
+            
+            # Parse with drain3 to get template ID
+            template_id = self.parse_span_name_with_drain3(normalized_name)
+            
+            # Create pattern using template ID instead of raw name
+            pattern = f"template_{template_id}#{subtype}"
             patterns.append(pattern)
             
             # Process children
@@ -325,15 +393,31 @@ def main():
                        help='Minimum count for a feature to be included')
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed for reproducibility')
+    parser.add_argument('--drain_state_file', type=str, default=None,
+                       help='Path to drain3 state file for template persistence')
+    parser.add_argument('--training_mode', action='store_true', default=True,
+                       help='Build templates (default: True)')
+    parser.add_argument('--inference_mode', action='store_true', default=False,
+                       help='Use existing templates')
     
     args = parser.parse_args()
+    
+    # Handle training/inference mode logic
+    if args.inference_mode:
+        training_mode = False
+    else:
+        training_mode = args.training_mode
     
     # Set random seed for reproducibility
     random.seed(args.seed)
     np.random.seed(args.seed)
     
-    # Create processor
-    processor = TraceProcessor(min_feature_count=args.min_feature_count)
+    # Create processor with Drain3 configuration
+    processor = TraceProcessor(
+        min_feature_count=args.min_feature_count,
+        drain_state_file=args.drain_state_file,
+        training_mode=training_mode
+    )
     
     # Process traces
     processor.process_traces(args.input)
