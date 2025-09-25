@@ -16,13 +16,13 @@ __all__ = ['is_integer', 'is_float', 'is_tensor_object', 'TensorArgValidator']
 
 __INTEGER_TYPES = (
     six.integer_types +
-    (np.integer, np.int, np.uint,
+    (np.integer, int,  # np.int and np.uint were deprecated and removed
      np.int8, np.int16, np.int32, np.int64,
      np.uint8, np.uint16, np.uint32, np.uint64)
 )
 __FLOATING_TYPES = (
     float,
-    np.float,
+    np.floating,  # np.float was deprecated and removed
     np.float16, np.float32, np.float64,
 )
 

@@ -84,11 +84,11 @@ class JsonEncoder(json.JSONEncoder):
         if isinstance(o, JsonBinary):
             cnt = b64encode(o.value).decode('utf-8')
             yield {'__type__': 'binary', 'data': cnt}
-        elif isinstance(o, (np.integer, np.int, np.uint,
+        elif isinstance(o, (np.integer, int,  # np.int and np.uint were deprecated
                             np.int8, np.int16, np.int32, np.int64,
                             np.uint8, np.uint16, np.uint32, np.uint64)):
             yield int(o)
-        elif isinstance(o, (np.float, np.float16, np.float32, np.float64)):
+        elif isinstance(o, (np.floating, np.float16, np.float32, np.float64)):
             yield float(o)
         elif isinstance(o, np.ndarray):
             yield {
