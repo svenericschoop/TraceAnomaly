@@ -5,10 +5,8 @@ import os, time
 import click
 import tensorflow as tf
 import pandas as pd
+from tensorflow.contrib.framework import arg_scope, add_arg_scope
 from sklearn.model_selection import train_test_split
-
-# Enable TensorFlow 2.x compatibility
-tf.compat.v1.disable_eager_execution()
 
 import tfsnippet as spt
 from tfsnippet.examples.utils import (print_with_title,
@@ -55,15 +53,17 @@ class ExpConfig(MLConfig):
 
 
 @spt.global_reuse
+@add_arg_scope
 def q_net(x, posterior_flow, observed=None, n_z=None):
     net = spt.BayesianNet(observed=observed)
 
     # compute the hidden features
-    h_x = tf.cast(x, tf.float32)
-    h_x = spt.layers.dense(h_x, 500, activation_fn=tf.nn.leaky_relu,
-                          kernel_regularizer=spt.layers.l2_regularizer(config.l2_reg))
-    h_x = spt.layers.dense(h_x, 500, activation_fn=tf.nn.leaky_relu,
-                          kernel_regularizer=spt.layers.l2_regularizer(config.l2_reg))
+    with arg_scope([spt.layers.dense],
+                   activation_fn=tf.nn.leaky_relu,
+                   kernel_regularizer=spt.layers.l2_regularizer(config.l2_reg)):
+        h_x = tf.to_float(x)
+        h_x = spt.layers.dense(h_x, 500)
+        h_x = spt.layers.dense(h_x, 500)
 
     # sample z ~ q(z|x)
     z_mean = spt.layers.dense(h_x, config.z_dim, name='z_mean')
@@ -76,6 +76,7 @@ def q_net(x, posterior_flow, observed=None, n_z=None):
 
 
 @spt.global_reuse
+@add_arg_scope
 def p_net(observed=None, n_z=None):
     net = spt.BayesianNet(observed=observed)
 
@@ -85,11 +86,12 @@ def p_net(observed=None, n_z=None):
                 group_ndims=1, n_samples=n_z)
 
     # compute the hidden features
-    h_z = z
-    h_z = spt.layers.dense(h_z, 500, activation_fn=tf.nn.leaky_relu,
-                          kernel_regularizer=spt.layers.l2_regularizer(config.l2_reg))
-    h_z = spt.layers.dense(h_z, 500, activation_fn=tf.nn.leaky_relu,
-                          kernel_regularizer=spt.layers.l2_regularizer(config.l2_reg))
+    with arg_scope([spt.layers.dense],
+                   activation_fn=tf.nn.leaky_relu,
+                   kernel_regularizer=spt.layers.l2_regularizer(config.l2_reg)):
+        h_z = z
+        h_z = spt.layers.dense(h_z, 500)
+        h_z = spt.layers.dense(h_z, 500)
 
     # sample x ~ p(x|z)
     x_mean = spt.layers.dense(h_z, config.x_dim, name='x_mean')
@@ -102,10 +104,12 @@ def p_net(observed=None, n_z=None):
 
 def coupling_layer_shift_and_scale(x1, n2):
     # compute the hidden features
-    h = x1
-    for _ in range(config.n_rnvp_hidden_layers):
-        h = spt.layers.dense(h, 500, activation_fn=tf.nn.leaky_relu,
-                            kernel_regularizer=spt.layers.l2_regularizer(config.l2_reg))
+    with arg_scope([spt.layers.dense],
+                   activation_fn=tf.nn.leaky_relu,
+                   kernel_regularizer=spt.layers.l2_regularizer(config.l2_reg)):
+        h = x1
+        for _ in range(config.n_rnvp_hidden_layers):
+            h = spt.layers.dense(h, 500)
 
     # compute shift and scale
     shift = spt.layers.dense(
@@ -158,7 +162,7 @@ def main(data_dir, outputpath):
     print('x_dim: %s z_dim: %s' % (config.x_dim, config.z_dim))
 
     # input placeholders
-    input_x = tf.compat.v1.placeholder(
+    input_x = tf.placeholder(
         dtype=tf.float32, shape=(None, config.x_dim), name='input_x')
     learning_rate = spt.AnnealingVariable(
         'learning_rate', config.initial_lr, config.lr_anneal_factor)
@@ -171,12 +175,12 @@ def main(data_dir, outputpath):
             spt.layers.planar_normalizing_flows(config.n_planar_nf_layers)
     else:
         assert(config.flow_type == 'rnvp')
-        with tf.compat.v1.variable_scope('posterior_flow'):
+        with tf.variable_scope('posterior_flow'):
             flows = []
             for i in range(config.n_rnvp_layers):
                 flows.append(spt.layers.ActNorm())
                 flows.append(spt.layers.CouplingLayer(
-                    tf.compat.v1.make_template(
+                    tf.make_template(
                         'coupling',
                         coupling_layer_shift_and_scale,
                         create_scope_now_=True
@@ -187,23 +191,24 @@ def main(data_dir, outputpath):
             posterior_flow = spt.layers.SequentialFlow(flows=flows)
 
     # derive the initialization op
-    with tf.compat.v1.name_scope('initialization'):
+    with tf.name_scope('initialization'), \
+            arg_scope([spt.layers.act_norm], initializing=True):
         init_q_net = q_net(input_x, posterior_flow)
         init_chain = init_q_net.chain(
             p_net, latent_axis=0, observed={'x': input_x})
         init_loss = tf.reduce_mean(init_chain.vi.training.sgvb())
 
     # derive the loss and lower-bound for training
-    with tf.compat.v1.name_scope('training'):
+    with tf.name_scope('training'):
         train_q_net = q_net(input_x, posterior_flow)
         train_chain = train_q_net.chain(
             p_net, latent_axis=0, observed={'x': input_x})
 
         vae_loss = tf.reduce_mean(train_chain.vi.training.sgvb())
-        loss = vae_loss + tf.compat.v1.losses.get_regularization_loss()
+        loss = vae_loss + tf.losses.get_regularization_loss()
 
     # derive the nll and logits output for testing
-    with tf.compat.v1.name_scope('testing'):
+    with tf.name_scope('testing'):
         test_q_net = q_net(input_x, posterior_flow, n_z=config.test_n_z)
         test_chain = test_q_net.chain(
             p_net, latent_axis=0, observed={'x': input_x})
@@ -212,9 +217,9 @@ def main(data_dir, outputpath):
         test_lb = tf.reduce_mean(test_chain.vi.lower_bound.elbo())
 
     # derive the optimizer
-    with tf.compat.v1.name_scope('optimizing'):
-        optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate)
-        params = tf.compat.v1.trainable_variables()
+    with tf.name_scope('optimizing'):
+        optimizer = tf.train.AdamOptimizer(learning_rate)
+        params = tf.trainable_variables()
         grads = optimizer.compute_gradients(loss, var_list=params)
 
         cliped_grad = []
@@ -225,7 +230,7 @@ def main(data_dir, outputpath):
                 cliped_grad.append((grad, var))
 
         with tf.control_dependencies(
-                tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.UPDATE_OPS)):
+                tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
             train_op = optimizer.apply_gradients(cliped_grad)
 
     train_flow = spt.DataFlow.arrays([x_train],
@@ -250,7 +255,7 @@ def main(data_dir, outputpath):
     os.makedirs('models', exist_ok=True)
     os.makedirs('results', exist_ok=True)
 
-    with tf.compat.v1.Session().as_default() as session:
+    with spt.utils.create_session().as_default() as session:
         var_dict = spt.utils.get_variables_as_dict()
         saver = spt.VariableSaver(var_dict, model_name)
         
