@@ -168,7 +168,7 @@ def normalization(matrix, mean, std):
     return n_mat
 
 
-def get_data_vae(train_file, normal_file, abnormal_file):
+def get_data_vae(train_file, normal_file, abnormal_file, valid_columns=None):
     """
     Get data for VAE training and testing.
     
@@ -176,11 +176,16 @@ def get_data_vae(train_file, normal_file, abnormal_file):
         train_file: Path to training data file
         normal_file: Path to normal test data file
         abnormal_file: Path to abnormal test data file
+        valid_columns: Pre-computed valid columns (optional)
         
     Returns:
         Tuple of ((train_x, train_y), (test_x, test_y), test_flow)
     """
-    _, train_raw, valid_columns = read_raw_vector(train_file)
+    if valid_columns is None:
+        _, train_raw, valid_columns = read_raw_vector(train_file)
+    else:
+        _, train_raw, _ = read_raw_vector(train_file, valid_columns)
+    
     flows1, normal_raw, _ = read_raw_vector(normal_file, valid_columns, shuffle=False)
     flows2, abnormal_raw, _ = read_raw_vector(abnormal_file, valid_columns, shuffle=False)
 
@@ -223,7 +228,18 @@ def get_data_vae_custom(data_dir):
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Required file not found: {file_path}")
     
-    return get_data_vae(train_file, normal_file, abnormal_file)
+    # Load metadata to get the original feature mapping
+    metadata_file = os.path.join(data_dir, 'metadata.json')
+    if os.path.exists(metadata_file):
+        with open(metadata_file, 'r') as f:
+            metadata = json.load(f)
+        valid_columns = metadata.get('valid_columns', None)
+        print(f"Using pre-computed valid columns from metadata: {len(valid_columns) if valid_columns else 'None'}")
+    else:
+        valid_columns = None
+        print("No metadata found, will compute valid columns from training data")
+    
+    return get_data_vae(train_file, normal_file, abnormal_file, valid_columns)
 
 def get_data_vae_test_only(data_dir, train_data_dir=None):
     """
@@ -244,8 +260,22 @@ def get_data_vae_test_only(data_dir, train_data_dir=None):
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Required file not found: {file_path}")
     
+    # Load metadata to get the original feature mapping
+    metadata_file = os.path.join(data_dir, 'metadata.json')
+    if os.path.exists(metadata_file):
+        with open(metadata_file, 'r') as f:
+            metadata = json.load(f)
+        valid_columns = metadata.get('valid_columns', None)
+        print(f"Using pre-computed valid columns from metadata: {len(valid_columns) if valid_columns else 'None'}")
+    else:
+        valid_columns = None
+        print("No metadata found, will compute valid columns from test data")
+    
     # Load test data
-    flows1, normal_raw, valid_columns = read_raw_vector(normal_file, shuffle=False)
+    if valid_columns is None:
+        flows1, normal_raw, valid_columns = read_raw_vector(normal_file, shuffle=False)
+    else:
+        flows1, normal_raw, _ = read_raw_vector(normal_file, valid_columns, shuffle=False)
     flows2, abnormal_raw, _ = read_raw_vector(abnormal_file, valid_columns, shuffle=False)
     
     # Try to use training data normalization if available
@@ -301,9 +331,20 @@ def get_data_vae_unsupervised(data_dir, max_samples=None, sample_rate=1.0):
     if not os.path.exists(train_file):
         raise FileNotFoundError(f"Required file not found: {train_file}")
     
+    # Load metadata to get the original feature mapping
+    metadata_file = os.path.join(data_dir, 'metadata.json')
+    if os.path.exists(metadata_file):
+        with open(metadata_file, 'r') as f:
+            metadata = json.load(f)
+        valid_columns = metadata.get('valid_columns', None)
+        print(f"Using pre-computed valid columns from metadata: {len(valid_columns) if valid_columns else 'None'}")
+    else:
+        valid_columns = None
+        print("No metadata found, will compute valid columns from sampled data")
+    
     # Use streaming approach for memory efficiency
     print(f"Using streaming data loading: max_samples={max_samples}, sample_rate={sample_rate}")
-    flows, vectors, _ = read_raw_vector_streaming(train_file, max_samples=max_samples, sample_rate=sample_rate)
+    flows, vectors, computed_valid_columns = read_raw_vector_streaming(train_file, vc=valid_columns, max_samples=max_samples, sample_rate=sample_rate)
     
     # Apply normalization for consistency with supervised training
     print("Applying normalization...")
