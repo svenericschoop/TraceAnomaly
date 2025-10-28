@@ -360,7 +360,16 @@ def main(data_dir, outputpath, max_samples, sample_rate, use_gpu, gpu_memory_fra
     else:
         session_config.device_count['GPU'] = 0  # Force CPU usage
     
-    with spt.utils.create_session(lock_memory=False, **session_config).as_default() as session:
+    # Convert ConfigProto to kwargs for create_session
+    session_kwargs = {}
+    if config.use_gpu:
+        session_kwargs['allow_growth'] = True
+        if hasattr(config, 'gpu_memory_fraction'):
+            session_kwargs['per_process_gpu_memory_fraction'] = config.gpu_memory_fraction
+    else:
+        session_kwargs['device_count'] = {'GPU': 0}
+    
+    with spt.utils.create_session(lock_memory=False, **session_kwargs).as_default() as session:
         var_dict = spt.utils.get_variables_as_dict()
         saver = spt.VariableSaver(var_dict, model_name)
         

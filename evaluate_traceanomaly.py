@@ -195,15 +195,19 @@ class TraceAnomalyEvaluator:
         print(f"Evaluation will use: {device_info}")
         
         # Create session with GPU configuration
-        session_config = tf.ConfigProto()
         if self.use_gpu:
-            session_config.gpu_options.allow_growth = True
-            session_config.gpu_options.per_process_gpu_memory_fraction = self.gpu_memory_fraction
+            # Use GPU with memory growth and fraction
+            self.session = spt.utils.create_session(
+                lock_memory=False,
+                allow_growth=True,
+                per_process_gpu_memory_fraction=self.gpu_memory_fraction
+            )
         else:
-            # Force CPU usage by setting device count properly
-            session_config.device_count['GPU'] = 0
-        
-        self.session = spt.utils.create_session(lock_memory=False, **session_config)
+            # Force CPU usage
+            self.session = spt.utils.create_session(
+                lock_memory=False,
+                device_count={'GPU': 0}
+            )
         
         with self.session.as_default():
             # Build model graph
