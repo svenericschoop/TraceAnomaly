@@ -358,7 +358,7 @@ def main(data_dir, outputpath, max_samples, sample_rate, use_gpu, gpu_memory_fra
         if hasattr(config, 'gpu_memory_fraction'):
             session_config.gpu_options.per_process_gpu_memory_fraction = config.gpu_memory_fraction
     else:
-        session_config.device_count = {'GPU': 0}  # Force CPU usage
+        session_config.device_count['GPU'] = 0  # Force CPU usage
     
     with spt.utils.create_session(lock_memory=False, **session_config).as_default() as session:
         var_dict = spt.utils.get_variables_as_dict()

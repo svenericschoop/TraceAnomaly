@@ -200,7 +200,8 @@ class TraceAnomalyEvaluator:
             session_config.gpu_options.allow_growth = True
             session_config.gpu_options.per_process_gpu_memory_fraction = self.gpu_memory_fraction
         else:
-            session_config.device_count = {'GPU': 0}  # Force CPU usage
+            # Force CPU usage by setting device count properly
+            session_config.device_count['GPU'] = 0
         
         self.session = spt.utils.create_session(lock_memory=False, **session_config)
         
