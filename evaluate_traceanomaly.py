@@ -4,14 +4,24 @@ TraceAnomaly Evaluation Script
 
 This script loads a trained TraceAnomaly model and evaluates it on labeled test data,
 calculating F1 scores and other metrics using KDE-based thresholding as described
-in the TraceAnomaly paper.
+in the TraceAnomaly paper. Supports both GPU and CPU evaluation.
 
 Usage:
+    # GPU evaluation (default)
     python evaluate_traceanomaly.py \
         --model_path md_vae_sampled_vaeg.model \
         --test_data_dir processed_test_data \
         --train_data_dir processed_training \
-        --output_file evaluation_results.csv
+        --output_file evaluation_results.csv \
+        --use_gpu --gpu_memory_fraction 0.8
+    
+    # CPU evaluation
+    python evaluate_traceanomaly.py \
+        --model_path md_vae_sampled_vaeg.model \
+        --test_data_dir processed_test_data \
+        --train_data_dir processed_training \
+        --output_file evaluation_results.csv \
+        --no_gpu
 """
 
 import os
@@ -28,7 +38,7 @@ from pathlib import Path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'traceanomaly'))
 
 import tfsnippet as spt
-from tfsnippet.examples.utils import collect_outputs
+from tfsnippet.examples.utils import collect_outputs, MultiGPU
 from traceanomaly.readdata_custom import get_data_vae_custom, get_data_vae_test_only, load_metadata
 from traceanomaly.evaluation_utils import (
     apply_kde_thresholding, calculate_metrics, calculate_score_statistics,
@@ -40,7 +50,7 @@ from traceanomaly.evaluation_utils import (
 class TraceAnomalyEvaluator:
     """Evaluator for TraceAnomaly models."""
     
-    def __init__(self, model_path: str, test_data_dir: str, train_data_dir: str):
+    def __init__(self, model_path: str, test_data_dir: str, train_data_dir: str, use_gpu: bool = True, gpu_memory_fraction: float = 0.8):
         """
         Initialize the evaluator.
         
@@ -48,10 +58,14 @@ class TraceAnomalyEvaluator:
             model_path: Path to trained model directory
             test_data_dir: Directory containing processed test data
             train_data_dir: Directory containing training data (for KDE fitting)
+            use_gpu: Whether to use GPU for evaluation
+            gpu_memory_fraction: Fraction of GPU memory to use (0.0-1.0)
         """
         self.model_path = model_path
         self.test_data_dir = test_data_dir
         self.train_data_dir = train_data_dir
+        self.use_gpu = use_gpu
+        self.gpu_memory_fraction = gpu_memory_fraction
         
         # Model components
         self.session = None
@@ -147,10 +161,13 @@ class TraceAnomalyEvaluator:
         
         # Build test network
         with tf.name_scope('testing'):
-            test_q_net = q_net(self.input_x, posterior_flow, n_z=config.test_n_z)
-            test_chain = test_q_net.chain(
-                p_net, latent_axis=0, observed={'x': self.input_x})
-            self.test_logp = test_chain.vi.evaluation.is_loglikelihood()
+            # Use GPU if available
+            device = '/device:GPU:0' if self.use_gpu else '/device:CPU:0'
+            with tf.device(device):
+                test_q_net = q_net(self.input_x, posterior_flow, n_z=config.test_n_z)
+                test_chain = test_q_net.chain(
+                    p_net, latent_axis=0, observed={'x': self.input_x})
+                self.test_logp = test_chain.vi.evaluation.is_loglikelihood()
         
         print("Model graph built successfully")
     
@@ -158,8 +175,34 @@ class TraceAnomalyEvaluator:
         """Load the trained model weights."""
         print(f"Loading model from {self.model_path}...")
         
-        # Create session
-        self.session = spt.utils.create_session(lock_memory=False)
+        # Configure GPU usage
+        if self.use_gpu:
+            # Check if GPU is available using TensorFlow 1.x API
+            from tensorflow.python.client import device_lib
+            local_device_protos = device_lib.list_local_devices()
+            gpu_devices = [x.name for x in local_device_protos if x.device_type == 'GPU']
+            if gpu_devices:
+                print(f"Found {len(gpu_devices)} GPU(s): {gpu_devices}")
+                print(f"Using GPU device: {gpu_devices[0]}")
+            else:
+                print("No GPU devices found, falling back to CPU")
+                self.use_gpu = False
+        else:
+            print("GPU usage disabled in configuration")
+        
+        # Print device information
+        device_info = "GPU" if self.use_gpu else "CPU"
+        print(f"Evaluation will use: {device_info}")
+        
+        # Create session with GPU configuration
+        session_config = tf.ConfigProto()
+        if self.use_gpu:
+            session_config.gpu_options.allow_growth = True
+            session_config.gpu_options.per_process_gpu_memory_fraction = self.gpu_memory_fraction
+        else:
+            session_config.device_count = {'GPU': 0}  # Force CPU usage
+        
+        self.session = spt.utils.create_session(lock_memory=False, **session_config)
         
         with self.session.as_default():
             # Build model graph
@@ -298,8 +341,17 @@ def main():
                        help='Directory containing training data (for KDE fitting)')
     parser.add_argument('--output_file', required=True,
                        help='Path to save evaluation results CSV')
+    parser.add_argument('--use_gpu', action='store_true', default=True,
+                       help='Enable GPU usage for evaluation (default: True)')
+    parser.add_argument('--no_gpu', action='store_true',
+                       help='Disable GPU usage and force CPU evaluation')
+    parser.add_argument('--gpu_memory_fraction', type=float, default=0.8,
+                       help='Fraction of GPU memory to use (0.0-1.0, default: 0.8)')
     
     args = parser.parse_args()
+    
+    # Handle GPU configuration
+    use_gpu = args.use_gpu and not args.no_gpu
     
     # Validate paths
     if not os.path.exists(args.model_path):
@@ -315,7 +367,9 @@ def main():
     evaluator = TraceAnomalyEvaluator(
         model_path=args.model_path,
         test_data_dir=args.test_data_dir,
-        train_data_dir=args.train_data_dir
+        train_data_dir=args.train_data_dir,
+        use_gpu=use_gpu,
+        gpu_memory_fraction=args.gpu_memory_fraction
     )
     
     # Run evaluation

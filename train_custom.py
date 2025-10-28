@@ -12,7 +12,8 @@ import psutil
 
 import tfsnippet as spt
 from tfsnippet.examples.utils import (print_with_title,
-                                      collect_outputs)
+                                      collect_outputs,
+                                      MultiGPU)
 from traceanomaly.readdata_custom import get_data_vae_custom, get_data_vae_unsupervised, print_data_summary
 from traceanomaly.MLConfig import (MLConfig,
                        global_config as config,
@@ -52,6 +53,10 @@ class ExpConfig(MLConfig):
     test_batch_size = 128
 
     norm_clip = 10
+
+    # GPU configuration
+    use_gpu = True
+    gpu_memory_fraction = 0.8  # Use 80% of GPU memory
 
 
 @spt.global_reuse
@@ -142,8 +147,16 @@ def get_memory_usage():
               metavar='INT', type=int, default=None)
 @click.option('--sample_rate', help='Fraction of data to sample (0.1 = 10%)', 
               metavar='FLOAT', type=float, default=1.0)
+@click.option('--use_gpu', help='Enable GPU usage', 
+              is_flag=True, default=True)
+@click.option('--gpu_memory_fraction', help='Fraction of GPU memory to use (0.0-1.0)', 
+              metavar='FLOAT', type=float, default=0.8)
 @config_options(ExpConfig)
-def main(data_dir, outputpath, max_samples, sample_rate):
+def main(data_dir, outputpath, max_samples, sample_rate, use_gpu, gpu_memory_fraction):
+    # Update config with command line parameters
+    config.use_gpu = use_gpu
+    config.gpu_memory_fraction = gpu_memory_fraction
+    
     if config.debug_level == -1:
         spt.utils.set_assertion_enabled(False)
     elif config.debug_level == 1:
@@ -237,45 +250,57 @@ def main(data_dir, outputpath, max_samples, sample_rate):
     # derive the initialization op
     with tf.name_scope('initialization'), \
             arg_scope([spt.layers.act_norm], initializing=True):
-        init_q_net = q_net(input_x, posterior_flow)
-        init_chain = init_q_net.chain(
-            p_net, latent_axis=0, observed={'x': input_x})
-        init_loss = tf.reduce_mean(init_chain.vi.training.sgvb())
+        # Use GPU if available
+        device = '/device:GPU:0' if config.use_gpu else '/device:CPU:0'
+        with tf.device(device):
+            init_q_net = q_net(input_x, posterior_flow)
+            init_chain = init_q_net.chain(
+                p_net, latent_axis=0, observed={'x': input_x})
+            init_loss = tf.reduce_mean(init_chain.vi.training.sgvb())
 
     # derive the loss and lower-bound for training
     with tf.name_scope('training'):
-        train_q_net = q_net(input_x, posterior_flow)
-        train_chain = train_q_net.chain(
-            p_net, latent_axis=0, observed={'x': input_x})
+        # Use GPU if available
+        device = '/device:GPU:0' if config.use_gpu else '/device:CPU:0'
+        with tf.device(device):
+            train_q_net = q_net(input_x, posterior_flow)
+            train_chain = train_q_net.chain(
+                p_net, latent_axis=0, observed={'x': input_x})
 
-        vae_loss = tf.reduce_mean(train_chain.vi.training.sgvb())
-        loss = vae_loss + tf.losses.get_regularization_loss()
+            vae_loss = tf.reduce_mean(train_chain.vi.training.sgvb())
+            loss = vae_loss + tf.losses.get_regularization_loss()
 
     # derive the nll and logits output for testing
     with tf.name_scope('testing'):
-        test_q_net = q_net(input_x, posterior_flow, n_z=config.test_n_z)
-        test_chain = test_q_net.chain(
-            p_net, latent_axis=0, observed={'x': input_x})
-        test_logp = test_chain.vi.evaluation.is_loglikelihood()
-        test_nll = -tf.reduce_mean(test_logp)
-        test_lb = tf.reduce_mean(test_chain.vi.lower_bound.elbo())
+        # Use GPU if available
+        device = '/device:GPU:0' if config.use_gpu else '/device:CPU:0'
+        with tf.device(device):
+            test_q_net = q_net(input_x, posterior_flow, n_z=config.test_n_z)
+            test_chain = test_q_net.chain(
+                p_net, latent_axis=0, observed={'x': input_x})
+            test_logp = test_chain.vi.evaluation.is_loglikelihood()
+            test_nll = -tf.reduce_mean(test_logp)
+            test_lb = tf.reduce_mean(test_chain.vi.lower_bound.elbo())
 
     # derive the optimizer
     with tf.name_scope('optimizing'):
-        optimizer = tf.train.AdamOptimizer(learning_rate)
-        params = tf.trainable_variables()
-        grads = optimizer.compute_gradients(loss, var_list=params)
+        # Use GPU if available
+        device = '/device:GPU:0' if config.use_gpu else '/device:CPU:0'
+        with tf.device(device):
+            optimizer = tf.train.AdamOptimizer(learning_rate)
+            params = tf.trainable_variables()
+            grads = optimizer.compute_gradients(loss, var_list=params)
 
-        cliped_grad = []
-        for grad, var in grads:
-            if grad is not None and var is not None:
-                if config.norm_clip is not None:
-                    grad = tf.clip_by_norm(grad, config.norm_clip)
-                cliped_grad.append((grad, var))
+            cliped_grad = []
+            for grad, var in grads:
+                if grad is not None and var is not None:
+                    if config.norm_clip is not None:
+                        grad = tf.clip_by_norm(grad, config.norm_clip)
+                    cliped_grad.append((grad, var))
 
-        with tf.control_dependencies(
-                tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
-            train_op = optimizer.apply_gradients(cliped_grad)
+            with tf.control_dependencies(
+                    tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
+                train_op = optimizer.apply_gradients(cliped_grad)
 
     train_flow = spt.DataFlow.arrays([x_train],
                                      config.batch_size,
@@ -307,8 +332,35 @@ def main(data_dir, outputpath, max_samples, sample_rate):
     pre_tf_memory = get_memory_usage()
     print(f"Memory before TensorFlow session: {pre_tf_memory:.1f} MB")
     
+    # Configure GPU usage
+    if config.use_gpu:
+        # Check if GPU is available using TensorFlow 1.x API
+        from tensorflow.python.client import device_lib
+        local_device_protos = device_lib.list_local_devices()
+        gpu_devices = [x.name for x in local_device_protos if x.device_type == 'GPU']
+        if gpu_devices:
+            print(f"Found {len(gpu_devices)} GPU(s): {gpu_devices}")
+            print(f"Using GPU device: {gpu_devices[0]}")
+        else:
+            print("No GPU devices found, falling back to CPU")
+            config.use_gpu = False
+    else:
+        print("GPU usage disabled in configuration")
+    
+    # Print device information
+    device_info = "GPU" if config.use_gpu else "CPU"
+    print(f"Training will use: {device_info}")
+    
     # Create memory-efficient session configuration
-    with spt.utils.create_session(lock_memory=False).as_default() as session:
+    session_config = tf.ConfigProto()
+    if config.use_gpu:
+        session_config.gpu_options.allow_growth = True
+        if hasattr(config, 'gpu_memory_fraction'):
+            session_config.gpu_options.per_process_gpu_memory_fraction = config.gpu_memory_fraction
+    else:
+        session_config.device_count = {'GPU': 0}  # Force CPU usage
+    
+    with spt.utils.create_session(lock_memory=False, **session_config).as_default() as session:
         var_dict = spt.utils.get_variables_as_dict()
         saver = spt.VariableSaver(var_dict, model_name)
         
