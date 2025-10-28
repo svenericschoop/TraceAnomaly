@@ -113,18 +113,21 @@ def read_raw_vector(input_file, vc=None, shuffle=True, sample=False):
                 continue
             flows.append(line.split(':')[0])
             vectors.append([float(x) for x in line.split(':')[1].split(',')])
-        
+    
+    # Convert to numpy array immediately to avoid memory duplication
+    vectors = np.array(vectors, dtype=np.float32)
+    
     if shuffle is True:
         arr_index = np.arange(len(vectors))
         np.random.shuffle(arr_index)
-        shuffled_vectors = []
-        for index in arr_index:
-            shuffled_vectors.append(vectors[index])
-        vectors = shuffled_vectors
+        vectors = vectors[arr_index]
+        flows = [flows[i] for i in arr_index]
 
     if sample is True:
-        vectors = random.sample(vectors, 50000)
-    vectors = np.array(vectors)
+        sample_size = min(50000, len(vectors))
+        sample_indices = np.random.choice(len(vectors), sample_size, replace=False)
+        vectors = vectors[sample_indices]
+        flows = [flows[i] for i in sample_indices]
 
     n = len(vectors)
     m = len(vectors[0])
@@ -222,7 +225,6 @@ def get_data_vae_custom(data_dir):
     
     return get_data_vae(train_file, normal_file, abnormal_file)
 
-
 def get_data_vae_test_only(data_dir, train_data_dir=None):
     """
     Get data for VAE testing from test-only processed data (no training data).
@@ -280,7 +282,6 @@ def get_data_vae_test_only(data_dir, train_data_dir=None):
     test_flow = flows1 + flows2
     
     return (None, None), (test_x, test_y), test_flow
-
 
 def get_data_vae_unsupervised(data_dir, max_samples=None, sample_rate=1.0):
     """
