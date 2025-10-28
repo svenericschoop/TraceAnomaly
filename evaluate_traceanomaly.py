@@ -85,6 +85,12 @@ class TraceAnomalyEvaluator:
         print(f"Normal samples: {np.sum(test_y == 0)}")
         print(f"Anomalous samples: {np.sum(test_y == 1)}")
         
+        # Validate test data
+        if len(test_x) == 0:
+            raise ValueError("No test data loaded")
+        if test_x.shape[1] == 0:
+            raise ValueError("Test data has 0 features - check data processing")
+        
         # Skip training data loading for now - will use test normal samples for KDE
         print("Using test normal samples for KDE fitting (skipping training data load)")
         self.train_data = None
@@ -100,14 +106,18 @@ class TraceAnomalyEvaluator:
         
         # Import model components from train_custom.py
         from train_custom import q_net, p_net, coupling_layer_shift_and_scale, ExpConfig
+        from traceanomaly.MLConfig import set_global_config
         
-        # Set configuration
+        # Create and set the global configuration
         config = ExpConfig()
         config.x_dim = x_dim
         config.z_dim = 10  # Default from train_custom.py
         config.flow_type = None  # Use vanilla VAE
         config.test_n_z = 500
         config.test_batch_size = 128
+        
+        # Set as global config so the model functions can access it
+        set_global_config(config)
         
         # Input placeholder
         self.input_x = tf.placeholder(
