@@ -65,90 +65,91 @@ class TestDataProcessor:
     
     def normalize_span_name(self, span_name: str) -> str:
         """
-        Normalize span name using regex patterns and Drain3 templates.
+        Normalize span name using regex patterns.
         
         Args:
-            span_name: Original span name
+            span_name: Raw span name
             
         Returns:
             Normalized span name
         """
         if not span_name:
             return "unknown"
-        
-        # Apply regex normalization patterns
+            
         normalized = span_name
         
-        # Pattern 1: Remove UUIDs and IDs
-        normalized = re.sub(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', '<uuid>', normalized)
-        normalized = re.sub(r'\b[0-9a-f]{8,}\b', '<id>', normalized)
+        # Use the same regex patterns as training script
+        regex_patterns = [
+            (r'/_doc/\d+', '/_doc/'),
+            (r'\d+', '<NUM>'),  # Replace numbers with <NUM>
+            (r'[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}', '<UUID>'),  # Replace UUIDs
+            (r'/[a-fA-F0-9]{32,}', '/<HASH>'),  # Replace long hashes
+            (r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', '<IP>'),  # Replace IP addresses
+            (r'\b\d{4}-\d{2}-\d{2}\b', '<DATE>'),  # Replace dates
+            (r'\b\d{2}:\d{2}:\d{2}\b', '<TIME>'),  # Replace times
+        ]
         
-        # Pattern 2: Normalize numbers
-        normalized = re.sub(r'\b\d+\b', '<num>', normalized)
-        
-        # Pattern 3: Normalize URLs and paths
-        normalized = re.sub(r'https?://[^\s]+', '<url>', normalized)
-        normalized = re.sub(r'/[^\s]*', '<path>', normalized)
-        
-        # Pattern 4: Normalize SQL queries
-        normalized = re.sub(r'SELECT.*FROM', 'SELECT <fields> FROM', normalized, flags=re.IGNORECASE)
-        normalized = re.sub(r'INSERT INTO.*VALUES', 'INSERT INTO <table> VALUES', normalized, flags=re.IGNORECASE)
-        normalized = re.sub(r'UPDATE.*SET', 'UPDATE <table> SET', normalized, flags=re.IGNORECASE)
-        normalized = re.sub(r'DELETE FROM', 'DELETE FROM <table>', normalized, flags=re.IGNORECASE)
-        
-        # Apply Drain3 template mining if available
-        if self.template_miner:
-            try:
-                result = self.template_miner.add_log_message(normalized)
-                if result['change_type'] != 'none':
-                    normalized = result['template_mined']
-            except Exception as e:
-                print(f"Warning: Drain3 processing failed for '{span_name}': {e}")
-        
+        for pattern, replacement in regex_patterns:
+            normalized = re.sub(pattern, replacement, normalized)
+            
         return normalized
     
-    def extract_service_patterns(self, trace_data: Dict) -> List[str]:
+    def parse_span_name_with_drain3(self, span_name: str) -> int:
         """
-        Extract service patterns from trace data.
+        Parse span name with Drain3 to get template cluster ID.
+        
+        Args:
+            span_name: Normalized span name
+            
+        Returns:
+            Template cluster ID
+        """
+        if self.template_miner:
+            result = self.template_miner.match(span_name)
+            return result.cluster_id if result else 0
+        else:
+            return 0
+    
+    def extract_service_patterns(self, trace_data: Dict[str, Any]) -> List[str]:
+        """
+        Extract service call patterns from a trace using Drain3 template parsing.
         
         Args:
             trace_data: JSON trace data
             
         Returns:
-            List of service patterns
+            List of service call patterns
         """
         patterns = []
         
-        def extract_from_span(span_data: Dict, depth: int = 0) -> None:
+        def extract_from_span(span: Dict[str, Any], depth: int = 0) -> None:
+            """Recursively extract patterns from spans."""
             if depth > 10:  # Prevent infinite recursion
                 return
                 
-            if isinstance(span_data, dict):
-                # Extract span name and subtype
-                span_name = span_data.get('name', '')
-                span_type = span_data.get('type', '')
-                span_subtype = span_data.get('subtype', '')
-                
-                if span_name:
-                    # Normalize span name
-                    normalized_name = self.normalize_span_name(span_name)
-                    
-                    # Create individual pattern
-                    if span_subtype:
-                        pattern = f"{normalized_name}#{span_subtype}"
-                    else:
-                        pattern = f"{normalized_name}#{span_type}"
-                    
-                    patterns.append(pattern)
-                
-                # Recursively process children
-                children = span_data.get('children', [])
-                if isinstance(children, list):
-                    for child in children:
-                        extract_from_span(child, depth + 1)
+            # Extract service name and subtype
+            name = span.get('name', 'unknown')
+            subtype = span.get('subtype', 'unknown')
+            
+            # Normalize the span name using regex patterns
+            normalized_name = self.normalize_span_name(name)
+            
+            # Parse with drain3 to get template ID
+            template_id = self.parse_span_name_with_drain3(normalized_name)
+            
+            # Create pattern using template ID instead of raw name
+            pattern = f"template_{template_id}#{subtype}"
+            patterns.append(pattern)
+            
+            # Process children
+            children = span.get('children', [])
+            for child in children:
+                extract_from_span(child, depth + 1)
         
-        # Start extraction from root
-        extract_from_span(trace_data)
+        # Start from the root transaction
+        if 'children' in trace_data:
+            for child in trace_data['children']:
+                extract_from_span(child)
         
         return patterns
     
