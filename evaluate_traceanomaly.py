@@ -28,7 +28,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'traceanomaly'))
 
 import tfsnippet as spt
 from tfsnippet.examples.utils import collect_outputs
-from traceanomaly.readdata_custom import get_data_vae_custom, load_metadata
+from traceanomaly.readdata_custom import get_data_vae_custom, get_data_vae_test_only, load_metadata
 from traceanomaly.evaluation_utils import (
     apply_kde_thresholding, calculate_metrics, calculate_score_statistics,
     generate_confusion_matrix_text, save_evaluation_results, print_evaluation_summary,
@@ -67,8 +67,14 @@ class TraceAnomalyEvaluator:
         """Load test data using the custom data loader."""
         print("Loading test data...")
         
-        # Load test data
-        (_, _), (test_x, test_y), test_flow = get_data_vae_custom(self.test_data_dir)
+        # Check if we have a train file in test directory (full dataset)
+        train_file = os.path.join(self.test_data_dir, 'train')
+        if os.path.exists(train_file):
+            # Use full dataset loader
+            (_, _), (test_x, test_y), test_flow = get_data_vae_custom(self.test_data_dir)
+        else:
+            # Use test-only loader with training data for normalization
+            (_, _), (test_x, test_y), test_flow = get_data_vae_test_only(self.test_data_dir, self.train_data_dir)
         
         self.test_data = test_x
         self.test_labels = test_y

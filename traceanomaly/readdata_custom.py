@@ -223,6 +223,65 @@ def get_data_vae_custom(data_dir):
     return get_data_vae(train_file, normal_file, abnormal_file)
 
 
+def get_data_vae_test_only(data_dir, train_data_dir=None):
+    """
+    Get data for VAE testing from test-only processed data (no training data).
+    
+    Args:
+        data_dir: Directory containing processed test data files
+        train_data_dir: Directory containing training data for normalization (optional)
+        
+    Returns:
+        Tuple of ((None, None), (test_x, test_y), test_flow)
+    """
+    normal_file = os.path.join(data_dir, 'test_normal')
+    abnormal_file = os.path.join(data_dir, 'test_abnormal')
+    
+    # Check if test files exist
+    for file_path in [normal_file, abnormal_file]:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Required file not found: {file_path}")
+    
+    # Load test data
+    flows1, normal_raw, valid_columns = read_raw_vector(normal_file, shuffle=False)
+    flows2, abnormal_raw, _ = read_raw_vector(abnormal_file, valid_columns, shuffle=False)
+    
+    # Try to use training data normalization if available
+    if train_data_dir:
+        train_file = os.path.join(train_data_dir, 'train')
+        if os.path.exists(train_file):
+            try:
+                # Load training data for normalization
+                _, train_raw, _ = read_raw_vector(train_file, valid_columns, shuffle=False)
+                train_mean, train_std = get_mean_std(train_raw)
+                print("Using training data normalization parameters")
+            except Exception as e:
+                print(f"Warning: Could not load training normalization: {e}")
+                # Fall back to test data normalization
+                all_raw = np.concatenate([normal_raw, abnormal_raw])
+                train_mean, train_std = get_mean_std(all_raw)
+        else:
+            # Fall back to test data normalization
+            all_raw = np.concatenate([normal_raw, abnormal_raw])
+            train_mean, train_std = get_mean_std(all_raw)
+    else:
+        # Use test data for normalization
+        all_raw = np.concatenate([normal_raw, abnormal_raw])
+        train_mean, train_std = get_mean_std(all_raw)
+    
+    normal_x = normalization(normal_raw, train_mean, train_std)
+    abnormal_x = normalization(abnormal_raw, train_mean, train_std)
+    
+    normal_y = np.zeros(len(normal_x), dtype=np.int32)
+    abnormal_y = np.ones(len(abnormal_x), dtype=np.int32)
+    
+    test_x = np.concatenate([normal_x, abnormal_x])
+    test_y = np.concatenate([normal_y, abnormal_y])
+    test_flow = flows1 + flows2
+    
+    return (None, None), (test_x, test_y), test_flow
+
+
 def get_data_vae_unsupervised(data_dir, max_samples=None, sample_rate=1.0):
     """
     Get data for unsupervised VAE training from custom processed data.
