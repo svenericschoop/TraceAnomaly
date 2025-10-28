@@ -21,6 +21,7 @@ import argparse
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+import gc
 from pathlib import Path
 
 # Add traceanomaly module to path
@@ -84,28 +85,9 @@ class TraceAnomalyEvaluator:
         print(f"Normal samples: {np.sum(test_y == 0)}")
         print(f"Anomalous samples: {np.sum(test_y == 1)}")
         
-        # Load training data for KDE fitting
-        print("Loading training data for KDE fitting...")
-        try:
-            # Try to load training data
-            train_file = os.path.join(self.train_data_dir, 'train')
-            if os.path.exists(train_file):
-                from traceanomaly.readdata_custom import read_raw_vector, get_mean_std, normalization
-                import pickle
-                
-                # Load training data
-                _, train_raw, valid_columns = read_raw_vector(train_file)
-                train_mean, train_std = get_mean_std(train_raw)
-                train_x = normalization(train_raw, train_mean, train_std)
-                
-                self.train_data = train_x
-                print(f"Training data loaded: {len(train_x)} samples")
-            else:
-                print("Warning: Training data not found, will use test normal samples for KDE")
-                self.train_data = None
-        except Exception as e:
-            print(f"Warning: Could not load training data: {e}")
-            self.train_data = None
+        # Skip training data loading for now - will use test normal samples for KDE
+        print("Using test normal samples for KDE fitting (skipping training data load)")
+        self.train_data = None
     
     def build_model_graph(self, x_dim: int):
         """
@@ -199,6 +181,10 @@ class TraceAnomalyEvaluator:
         # Normalize scores by feature dimension (as done in training)
         test_scores = test_scores / self.test_data.shape[1]
         
+        # Clear data flow from memory
+        del test_flow
+        gc.collect()
+        
         print(f"Inference completed in {end_time - start_time:.2f} seconds")
         print(f"Score range: [{np.min(test_scores):.4f}, {np.max(test_scores):.4f}]")
         
@@ -283,6 +269,10 @@ class TraceAnomalyEvaluator:
         with self.session.as_default():
             train_scores = collect_outputs([self.test_logp], [self.input_x], train_flow)[0]
             train_scores = train_scores / self.train_data.shape[1]
+        
+        # Clear data flow from memory
+        del train_flow
+        gc.collect()
         
         return train_scores
 
