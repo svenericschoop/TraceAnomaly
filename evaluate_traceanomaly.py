@@ -215,18 +215,52 @@ class TraceAnomalyEvaluator:
             
             # Load model weights
             var_dict = spt.utils.get_variables_as_dict()
+            print(f"Found {len(var_dict)} variables in graph")
             saver = spt.VariableSaver(var_dict, self.model_path)
             
             if os.path.exists(self.model_path):
                 print("Restoring model weights...")
-                saver.restore()
-                print("Model loaded successfully")
+                try:
+                    saver.restore()
+                    print("Model loaded successfully")
+                except Exception as e:
+                    print(f"Warning during model restore: {e}")
+                    # Check which variables were restored
+                    uninitialized = spt.utils.get_uninitialized_variables()
+                    if uninitialized:
+                        print(f"Warning: {len(uninitialized)} variables were not initialized from checkpoint:")
+                        for var in uninitialized[:10]:
+                            print(f"  - {var.name}")
+                        if len(uninitialized) > 10:
+                            print(f"  ... and {len(uninitialized) - 10} more")
+                    else:
+                        print("All variables appear to be initialized")
+                    raise
             else:
                 raise FileNotFoundError(f"Model not found at {self.model_path}")
     
     def run_inference(self):
         """Run inference on test data to get anomaly scores."""
         print("Running inference on test data...")
+        
+        # Validate input data
+        if np.any(np.isnan(self.test_data)) or np.any(np.isinf(self.test_data)):
+            raise ValueError("Test data contains NaN or infinite values")
+        
+        print(f"Test data stats: shape={self.test_data.shape}, "
+              f"min={np.min(self.test_data):.4f}, max={np.max(self.test_data):.4f}, "
+              f"mean={np.mean(self.test_data):.4f}, std={np.std(self.test_data):.4f}")
+        
+        # Test with a small batch first to verify model is working
+        print("Testing inference with a small batch first...")
+        with self.session.as_default():
+            test_batch = self.test_data[:10]
+            test_scores_sample = self.session.run(self.test_logp, feed_dict={self.input_x: test_batch})
+            if np.any(np.isnan(test_scores_sample)) or np.any(np.isinf(test_scores_sample)):
+                print(f"ERROR: Small batch test produced NaN/Inf scores: {test_scores_sample}")
+                raise ValueError("Model inference is producing NaN/inf values. Check model loading and configuration.")
+            print(f"Small batch test successful. Sample scores: min={np.min(test_scores_sample):.4f}, "
+                  f"max={np.max(test_scores_sample):.4f}")
         
         # Create data flow
         test_flow = spt.DataFlow.arrays([self.test_data], 128)  # batch_size=128
@@ -236,6 +270,13 @@ class TraceAnomalyEvaluator:
         with self.session.as_default():
             test_scores = collect_outputs([self.test_logp], [self.input_x], test_flow)[0]
         end_time = time.time()
+        
+        # Check for NaN/inf before normalization
+        if np.any(np.isnan(test_scores)) or np.any(np.isinf(test_scores)):
+            nan_count = np.sum(np.isnan(test_scores))
+            inf_count = np.sum(np.isinf(test_scores))
+            raise ValueError(f"Inference produced invalid scores: {nan_count} NaN values, {inf_count} Inf values. "
+                           f"Check model loading and data compatibility.")
         
         # Normalize scores by feature dimension (as done in training)
         test_scores = test_scores / self.test_data.shape[1]
