@@ -231,9 +231,10 @@ class TraceAnomalyEvaluator:
         # Create data flow
         test_flow = spt.DataFlow.arrays([self.test_data], 128)  # batch_size=128
         
-        # Run inference
+        # Run inference with session context
         start_time = time.time()
-        test_scores = collect_outputs([self.test_logp], [self.input_x], test_flow)[0]
+        with self.session.as_default():
+            test_scores = collect_outputs([self.test_logp], [self.input_x], test_flow)[0]
         end_time = time.time()
         
         # Normalize scores by feature dimension (as done in training)
