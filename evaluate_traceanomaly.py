@@ -91,6 +91,23 @@ class TraceAnomalyEvaluator:
             # Use test-only loader with training data for normalization
             (_, _), (test_x, test_y), test_flow = get_data_vae_test_only(self.test_data_dir, self.train_data_dir)
         
+        # Clean NaN and Inf values from loaded data
+        nan_mask = np.isnan(test_x)
+        inf_mask = np.isinf(test_x)
+        if np.any(nan_mask) or np.any(inf_mask):
+            nan_count = np.sum(nan_mask)
+            inf_count = np.sum(inf_mask)
+            print(f"Warning: Found {nan_count} NaN and {inf_count} Inf values in loaded data")
+            print("Cleaning invalid values...")
+            
+            # Replace NaN/Inf with -1 (same as inactive features in normalization)
+            test_x = np.nan_to_num(test_x, nan=-1.0, posinf=-1.0, neginf=-1.0)
+            
+            # Verify cleaning
+            if np.any(np.isnan(test_x)) or np.any(np.isinf(test_x)):
+                raise ValueError("Failed to clean all NaN/Inf values from test data")
+            print("Successfully cleaned invalid values")
+        
         self.test_data = test_x
         self.test_labels = test_y
         self.test_flow = test_flow
